@@ -19,6 +19,7 @@ from .__version__ import __version__ as martini_version
 from warnings import warn
 from martini.datacube import DataCube, _GlobalProfileDataCube
 from martini.sph_kernels import DiracDeltaKernel
+from scipy.spatial import KDTree
 
 try:
     gc = subprocess.check_output(
@@ -140,6 +141,18 @@ class _BaseMartini:
         )  # prunes both source, and kernel if applicable
 
         self.spectral_model.init_spectra(self.source, self._datacube)
+        ij_pxs = list(
+            product(
+                np.arange(self._datacube._array.shape[0]),
+                np.arange(self._datacube._array.shape[1]),
+            )
+        ) #this could be stored to avoid computing it multiple times
+        particleWiseMasks = KDTree(ij_pxs).query_ball_point(self.source.pixcoords[:2].T, self.sph_kernel.sm_ranges) #should specify the number of workers
+        masks = [[] for _ in range(len(ij_pxs))]  # Pre-allocate lists for all nodes
+        for query_index, node_indices in enumerate(particleWiseMasks):
+            for node_index in node_indices:
+                masks[node_index].append(query_index)
+        self.masks = masks
 
         return
 
@@ -246,11 +259,11 @@ class _BaseMartini:
         rank, ij_pxs = ranks_and_ij_pxs
         if progressbar:
             ij_pxs = tqdm.tqdm(ij_pxs, position=rank)
+        index = 0
         for ij_px in ij_pxs:
             ij = np.array(ij_px)[..., np.newaxis] * U.pix
-            mask = (
-                np.abs(ij - self.source.pixcoords[:2]) <= self.sph_kernel.sm_ranges
-            ).all(axis=0)
+            mask = self.masks[index]
+            index += 1
             weights = self.sph_kernel._px_weight(
                 self.source.pixcoords[:2, mask] - ij, mask=mask
             )
